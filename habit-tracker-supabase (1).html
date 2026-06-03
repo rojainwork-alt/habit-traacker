@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>Habit Tracker</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f0f14; color: #f0f0f0; font-family: 'DM Mono', 'Courier New', monospace; -webkit-tap-highlight-color: transparent; }
+  @keyframes fadeUp { from { opacity:0;transform:translateY(16px) } to { opacity:1;transform:translateY(0) } }
+  .fu { animation: fadeUp 0.3s ease forwards; }
+  .card { transition: all 0.2s; cursor: pointer; }
+  .card:hover { transform: translateY(-3px); }
+  .dot { transition: all 0.12s; cursor: pointer; }
+  .dot:hover { transform: scale(1.2); }
+  .back { cursor:pointer; opacity:0.6; border:none; background:none; color:#f0f0f0; font-size:22px; transition:opacity 0.2s; }
+  .back:hover { opacity:1; }
+  input { -webkit-appearance:none; outline:none; }
+  button { font-family:inherit; cursor:pointer; border:none; }
+  ::-webkit-scrollbar { width:4px; }
+  ::-webkit-scrollbar-thumb { background:#2a2a35; border-radius:2px; }
+  .setup-step { background:#18181f; border:1px solid #2a2a35; border-radius:12px; padding:16px; margin-bottom:12px; }
+  .setup-step code { background:#0f0f14; border:1px solid #2a2a35; border-radius:6px; padding:2px 8px; font-size:12px; color:#FECA57; font-family:inherit; display:block; margin-top:8px; white-space:pre-wrap; line-height:1.6; }
+  .badge { display:inline-block; background:#A29BFE22; border:1px solid #A29BFE55; color:#A29BFE; border-radius:20px; padding:3px 10px; font-size:10px; letter-spacing:2px; }
+  .cat-tab { transition: all 0.18s; cursor: pointer; border:none; font-family:inherit; white-space:nowrap; }
+  .cat-tab:hover { opacity:0.85; }
+  .cat-chip { transition: all 0.15s; cursor: pointer; }
+  .cat-chip:hover { transform: scale(1.04); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const SUPABASE_URL = "YOUR_SUPABASE_URL";
+const SUPABASE_KEY = "YOUR_SUPABASE_ANON_KEY";
+
+const MONTHS  = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const WD      = ["S","M","T","W","T","F","S"];
+const COLORS  = ["#FF6B6B","#FF9F43","#FECA57","#48DBFB","#1DD1A1","#A29BFE","#FD79A8","#E17055","#00CEC9","#6C5CE7","#FDCB6E","#55EFC4"];
+const EMOJIS  = ["💪","🏃","📚","💧","🧘","😴","🥗","🎯","✍️","🎨","🎵","🌿","🏋️","🚴","🧠","❤️","🌅","🛁","🍎","☕"];
+
+const CATEGORIES = [
+  { id: "all",         label: "All",         emoji: "✦",  color: "#888" },
+  { id: "health",      label: "Health",      emoji: "❤️",  color: "#FF6B6B" },
+  { id: "fitness",     label: "Fitness",     emoji: "💪",  color: "#FF9F43" },
+  { id: "mind",        label: "Mind",        emoji: "🧠",  color: "#A29BFE" },
+  { id: "nutrition",   label: "Nutrition",   emoji: "🥗",  color: "#1DD1A1" },
+  { id: "sleep",       label: "Sleep",       emoji: "😴",  color: "#48DBFB" },
+  { id: "productivity",label: "Productivity",emoji: "🎯",  color: "#FECA57" },
+  { id: "selfcare",    label: "Self Care",   emoji: "🛁",  color: "#FD79A8" },
+  { id: "other",       label: "Other",       emoji: "🌿",  color: "#55EFC4" },
+];
+
+const getDays  = (y, m) => new Date(y, m + 1, 0).getDate();
+const getFirst = (y, m) => new Date(y, m, 1).getDay();
+const now = new Date();
+
+function getUserId() {
+  let id = localStorage.getItem("ht_user_id");
+  if (!id) { id = crypto.randomUUID(); localStorage.setItem("ht_user_id", id); }
+  return id;
+}
+const USER_ID = getUserId();
+
+function getCatMeta(catId) {
+  return CATEGORIES.find(c => c.id === catId) || CATEGORIES[CATEGORIES.length - 1];
+}
+
+// ── Setup Screen ──────────────────────────────────────────────────────────────
+function SetupScreen({ onDone }) {
+  const [url, setUrl] = useState("");
+  const [key, setKey] = useState("");
+  const save = () => {
+    if (!url.trim() || !key.trim()) return alert("Please fill in both fields.");
+    localStorage.setItem("sb_url", url.trim());
+    localStorage.setItem("sb_key", key.trim());
+    onDone(url.trim(), key.trim());
+  };
+  const SQL = `create table habits (
+  id text primary key,
+  user_id text not null,
+  name text not null,
+  emoji text,
+  color text,
+  category text default 'other',
+  created_at timestamptz default now()
+);
+
+create table logs (
+  id text primary key,
+  user_id text not null,
+  habit_id text not null,
+  year int not null,
+  month int not null,
+  day int not null,
+  done boolean default true,
+  unique(user_id, habit_id, year, month, day)
+);`;
+  return (
+    <div style={{ maxWidth:480, margin:"0 auto", padding:"24px 16px 80px" }}>
+      <div style={{ marginBottom:28 }}>
+        <div className="badge" style={{ marginBottom:12 }}>ONE-TIME SETUP</div>
+        <div style={{ fontSize:24, fontWeight:800, marginBottom:6 }}>Connect Supabase</div>
+        <div style={{ fontSize:13, color:"#555", lineHeight:1.7 }}>Connect your free Supabase database. Data syncs across all devices.</div>
+      </div>
+      <div className="setup-step">
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
+          <div style={{ width:24, height:24, borderRadius:"50%", background:"#A29BFE", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:700, color:"#0f0f14" }}>1</div>
+          <span style={{ fontSize:14, fontWeight:700 }}>Create a free Supabase account</span>
+        </div>
+        <div style={{ fontSize:12, color:"#666", marginBottom:8 }}>Go to supabase.com → New Project.</div>
+        <a href="https://supabase.com" target="_blank" rel="noreferrer" style={{ display:"inline-block", background:"#1DD1A122", border:"1px solid #1DD1A155", color:"#1DD1A1", borderRadius:8, padding:"7px 16px", fontSize:12, textDecoration:"none" }}>Open Supabase →</a>
+      </div>
+      <div className="setup-step">
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
+          <div style={{ width:24, height:24, borderRadius:"50%", background:"#A29BFE", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:700, color:"#0f0f14" }}>2</div>
+          <span style={{ fontSize:14, fontWeight:700 }}>Run this SQL in your project</span>
+        </div>
+        <div style={{ fontSize:12, color:"#666", marginBottom:8 }}>SQL Editor → New Query → paste & run:</div>
+        <code>{SQL}</code>
+      </div>
+      <div className="setup-step" style={{ borderColor:"#A29BFE44" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
+          <div style={{ width:24, height:24, borderRadius:"50%", background:"#A29BFE", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:700, color:"#0f0f14" }}>3</div>
+          <span style={{ fontSize:14, fontWeight:700 }}>Paste your credentials</span>
+        </div>
+        <div style={{ fontSize:11, color:"#555", marginBottom:6, letterSpacing:1, textTransform:"uppercase" }}>Project URL</div>
+        <input value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://xxxxxxxxxxxx.supabase.co"
+          style={{ width:"100%", background:"#0f0f14", border:"1px solid #2a2a35", borderRadius:10, padding:"11px 14px", color:"#f0f0f0", fontSize:13, marginBottom:14 }} />
+        <div style={{ fontSize:11, color:"#555", marginBottom:6, letterSpacing:1, textTransform:"uppercase" }}>Anon / Publishable Key</div>
+        <input value={key} onChange={e=>setKey(e.target.value)} placeholder="eyJhbGciOiJIUzI1NiIs..."
+          style={{ width:"100%", background:"#0f0f14", border:"1px solid #2a2a35", borderRadius:10, padding:"11px 14px", color:"#f0f0f0", fontSize:13, marginBottom:20 }} />
+        <button onClick={save} style={{ width:"100%", background:"#A29BFE", color:"#0f0f14", padding:"14px", borderRadius:12, fontSize:15, fontWeight:800, letterSpacing:1 }}>
+          CONNECT &amp; START TRACKING
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Main App ──────────────────────────────────────────────────────────────────
+function App() {
+  const [sbUrl, setSbUrl] = useState(() => localStorage.getItem("sb_url") || "");
+  const [sbKey, setSbKey] = useState(() => localStorage.getItem("sb_key") || "");
+  const sbRef = useRef(null);
+
+  const [year, setYear]   = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth());
+  const [habits, setHabits] = useState([]);
+  const [logs, setLogs]     = useState({});
+  const [page, setPage]     = useState("home");
+  const [selId, setSelId]   = useState(null);
+  const [activeCategory, setActiveCategory] = useState("all");
+
+  const [newName, setNewName]       = useState("");
+  const [newEmoji, setNewEmoji]     = useState("💪");
+  const [newColor, setNewColor]     = useState("#FF6B6B");
+  const [newCategory, setNewCategory] = useState("health");
+
+  const [status, setStatus]   = useState("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!sbUrl || !sbKey) return;
+    sbRef.current = supabase.createClient(sbUrl, sbKey);
+    loadAll();
+  }, [sbUrl, sbKey]);
+
+  const flash = (s) => { setStatus(s); setTimeout(() => setStatus(""), 2000); };
+
+  const loadAll = async () => {
+    const db = sbRef.current; if (!db) return;
+    setLoading(true);
+    try {
+      const { data: h } = await db.from("habits").select("*").eq("user_id", USER_ID).order("created_at");
+      const { data: l } = await db.from("logs").select("*").eq("user_id", USER_ID);
+      if (h) setHabits(h);
+      if (l) {
+        const map = {};
+        l.forEach(r => { if (r.done) map[`${r.habit_id}::${r.year}-${r.month}-${r.day}`] = true; });
+        setLogs(map);
+      }
+    } catch { flash("error"); }
+    setLoading(false);
+  };
+
+  const lk = (hId, d) => `${hId}::${year}-${month}-${d}`;
+
+  const toggle = async (hId, day, e) => {
+    if (e) e.stopPropagation();
+    const k = lk(hId, day);
+    const wasDone = !!logs[k];
+    setLogs(prev => ({ ...prev, [k]: !wasDone }));
+    flash("saving");
+    const db = sbRef.current;
+    try {
+      if (!wasDone) {
+        await db.from("logs").upsert({
+          id: `${USER_ID}-${hId}-${year}-${month}-${day}`,
+          user_id: USER_ID, habit_id: hId, year, month, day, done: true
+        }, { onConflict: "user_id,habit_id,year,month,day" });
+      } else {
+        await db.from("logs").delete().eq("user_id", USER_ID).eq("habit_id", hId).eq("year", year).eq("month", month).eq("day", day);
+      }
+      flash("saved");
+    } catch { setLogs(prev => ({ ...prev, [k]: wasDone })); flash("error"); }
+  };
+
+  const addHabit = async () => {
+    if (!newName.trim()) return;
+    const habit = { id: crypto.randomUUID(), user_id: USER_ID, name: newName.trim(), emoji: newEmoji, color: newColor, category: newCategory };
+    setHabits(prev => [...prev, habit]);
+    setNewName(""); setNewEmoji("💪"); setNewColor("#FF6B6B"); setNewCategory("health");
+    setPage("home"); flash("saving");
+    try {
+      await sbRef.current.from("habits").insert(habit);
+      flash("saved");
+    } catch { setHabits(prev => prev.filter(h => h.id !== habit.id)); flash("error"); }
+  };
+
+  const exportData = async () => {
+    const db = sbRef.current; if (!db) return;
+    try {
+      const { data: h } = await db.from("habits").select("*").eq("user_id", USER_ID);
+      const { data: l } = await db.from("logs").select("*").eq("user_id", USER_ID);
+      const backup = { exported_at: new Date().toISOString(), version: 1, habits: h || [], logs: l || [] };
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `habit-backup-${new Date().toISOString().slice(0,10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      flash("saved");
+    } catch { flash("error"); }
+  };
+
+  const importData = async (file) => {
+    if (!file) return;
+    const db = sbRef.current; if (!db) return;
+    try {
+      const text = await file.text();
+      const backup = JSON.parse(text);
+      if (!backup.habits || !backup.logs) return alert("Invalid backup file.");
+      const confirm = window.confirm(`This will restore ${backup.habits.length} habits and ${backup.logs.length} log entries. Continue?`);
+      if (!confirm) return;
+      flash("saving");
+      if (backup.habits.length) await db.from("habits").upsert(backup.habits, { onConflict: "id" });
+      if (backup.logs.length) await db.from("logs").upsert(backup.logs, { onConflict: "id" });
+      await loadAll();
+      flash("saved");
+    } catch { flash("error"); alert("Import failed. Check the file format."); }
+  };
+
+  const delHabit = async (id) => {
+    const prev = habits;
+    setHabits(h => h.filter(x => x.id !== id));
+    setPage("home"); setSelId(null); flash("saving");
+    try {
+      await sbRef.current.from("logs").delete().eq("habit_id", id).eq("user_id", USER_ID);
+      await sbRef.current.from("habits").delete().eq("id", id).eq("user_id", USER_ID);
+      flash("saved");
+    } catch { setHabits(prev); flash("error"); }
+  };
+
+  const doneCount = (hId) => { let c=0; for(let d=1;d<=getDays(year,month);d++) if(logs[lk(hId,d)]) c++; return c; };
+  const streak = (hId) => {
+    let s=0, d=new Date(now);
+    while(true) { const k=`${hId}::${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; if(logs[k]){s++;d.setDate(d.getDate()-1);}else break; }
+    return s;
+  };
+
+  const prevM = () => month===0?(setYear(y=>y-1),setMonth(11)):setMonth(m=>m-1);
+  const nextM = () => month===11?(setYear(y=>y+1),setMonth(0)):setMonth(m=>m+1);
+  const navBtn = { background:"#18181f", border:"1px solid #2a2a35", color:"#888", width:32, height:32, borderRadius:8, fontSize:16 };
+  const statusColor = status==="saved"?"#1DD1A1":status==="error"?"#FF6B6B":status==="saving"?"#FECA57":"#2a2a35";
+  const statusText  = status==="saved"?"✓ Saved":status==="error"?"✗ Error":status==="saving"?"⟳ Saving...":"";
+
+  if (!sbUrl || !sbKey) return <SetupScreen onDone={(u,k)=>{ setSbUrl(u); setSbKey(k); }} />;
+
+  // ── DETAIL ────────────────────────────────────────────────────────────
+  if (page==="detail" && selId) {
+    const habit = habits.find(h=>h.id===selId);
+    if (!habit) { setPage("home"); return null; }
+    const days=getDays(year,month), first=getFirst(year,month);
+    const done=doneCount(habit.id), pct=Math.round((done/days)*100), str=streak(habit.id);
+    const cat = getCatMeta(habit.category);
+    return (
+      <div style={{ minHeight:"100vh" }}>
+        <div style={{ maxWidth:440, margin:"0 auto", padding:"0 16px 80px" }}>
+          <div style={{ padding:"24px 0 18px", display:"flex", alignItems:"center", gap:14 }}>
+            <button className="back" onClick={()=>setPage("home")}>←</button>
+            <div style={{ flex:1 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+                <span style={{ background:cat.color+"22", border:`1px solid ${cat.color}55`, color:cat.color, borderRadius:20, padding:"2px 10px", fontSize:10, letterSpacing:1 }}>
+                  {cat.emoji} {cat.label.toUpperCase()}
+                </span>
+              </div>
+              <div style={{ fontSize:21, fontWeight:700 }}>{habit.emoji} {habit.name}</div>
+            </div>
+            <button onClick={()=>delHabit(habit.id)} style={{ background:"none", border:"1px solid #333", color:"#888", padding:"6px 14px", borderRadius:8, fontSize:12 }}>Delete</button>
+          </div>
+
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:22 }}>
+            {[["Done",done,"days"],["Streak",str,"in a row"],["Rate",pct+"%","this month"]].map(([l,v,s])=>(
+              <div key={l} style={{ background:"#18181f", border:`1px solid ${habit.color}33`, borderRadius:14, padding:"14px 12px" }}>
+                <div style={{ fontSize:10, color:"#555", letterSpacing:2, textTransform:"uppercase" }}>{l}</div>
+                <div style={{ fontSize:22, fontWeight:800, color:habit.color, marginTop:4 }}>{v}</div>
+                <div style={{ fontSize:10, color:"#444", marginTop:2 }}>{s}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginBottom:22 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, color:"#555", letterSpacing:1, marginBottom:8 }}>
+              <span>MONTHLY PROGRESS</span><span>{pct}%</span>
+            </div>
+            <div style={{ height:6, background:"#1e1e26", borderRadius:3, overflow:"hidden" }}>
+              <div style={{ height:"100%", width:pct+"%", background:habit.color, borderRadius:3 }} />
+            </div>
+          </div>
+
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
+            <button style={navBtn} onClick={prevM}>‹</button>
+            <span style={{ fontSize:12, color:"#666", letterSpacing:2 }}>{MONTHS[month].toUpperCase()} {year}</span>
+            <button style={navBtn} onClick={nextM}>›</button>
+          </div>
+
+          <div style={{ background:"#18181f", borderRadius:18, padding:16, border:"1px solid #2a2a35" }}>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:4, marginBottom:8 }}>
+              {WD.map((d,i)=><div key={i} style={{ textAlign:"center", fontSize:10, color:"#444" }}>{d}</div>)}
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:5 }}>
+              {Array(first).fill(null).map((_,i)=><div key={`e${i}`}/>)}
+              {Array.from({length:days},(_,i)=>i+1).map(d=>{
+                const checked=logs[lk(habit.id,d)];
+                const isToday=d===now.getDate()&&month===now.getMonth()&&year===now.getFullYear();
+                return (
+                  <div key={d} className="dot" onClick={(e)=>toggle(habit.id,d,e)}
+                    style={{ aspectRatio:"1", borderRadius:9, background:checked?habit.color:"#0f0f14",
+                      border:isToday?`2px solid ${habit.color}`:"2px solid transparent",
+                      display:"flex", alignItems:"center", justifyContent:"center",
+                      fontSize:12, fontWeight:600, color:checked?"#fff":"#333" }}>
+                    {d}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div style={{ marginTop:14, textAlign:"center", fontSize:11, color:statusColor, transition:"color 0.3s", letterSpacing:2 }}>
+            {statusText || "☁ SYNCED WITH SUPABASE"}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── ADD HABIT ─────────────────────────────────────────────────────────
+  if (page==="add") {
+    const selCat = getCatMeta(newCategory);
+    return (
+      <div style={{ minHeight:"100vh" }}>
+        <div style={{ maxWidth:440, margin:"0 auto", padding:"0 16px 80px" }}>
+          <div style={{ padding:"24px 0 22px", display:"flex", alignItems:"center", gap:14 }}>
+            <button className="back" onClick={()=>setPage("home")}>←</button>
+            <div>
+              <div style={{ fontSize:11, letterSpacing:3, color:"#555", textTransform:"uppercase" }}>Create</div>
+              <div style={{ fontSize:22, fontWeight:700 }}>New Habit</div>
+            </div>
+          </div>
+
+          {/* Live preview */}
+          <div style={{ background:newColor+"18", border:`1px solid ${newColor}44`, borderRadius:16, padding:"18px 20px", marginBottom:28, display:"flex", alignItems:"center", gap:14 }}>
+            <div style={{ width:48, height:48, borderRadius:14, background:newColor+"33", display:"flex", alignItems:"center", justifyContent:"center", fontSize:26 }}>{newEmoji}</div>
+            <div>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+                <span style={{ background:selCat.color+"22", border:`1px solid ${selCat.color}55`, color:selCat.color, borderRadius:20, padding:"2px 8px", fontSize:10 }}>
+                  {selCat.emoji} {selCat.label}
+                </span>
+              </div>
+              <div style={{ fontSize:16, fontWeight:700, color:newColor }}>{newName||"Your Habit"}</div>
+            </div>
+          </div>
+
+          {/* Name */}
+          <div style={{ marginBottom:22 }}>
+            <div style={{ fontSize:11, letterSpacing:2, color:"#555", textTransform:"uppercase", marginBottom:10 }}>Name</div>
+            <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="e.g. Morning Run"
+              onKeyDown={e=>e.key==="Enter"&&addHabit()}
+              style={{ width:"100%", background:"#18181f", border:"1px solid #2a2a35", borderRadius:12, padding:"14px 16px", color:"#f0f0f0", fontSize:15 }} />
+          </div>
+
+          {/* Category */}
+          <div style={{ marginBottom:22 }}>
+            <div style={{ fontSize:11, letterSpacing:2, color:"#555", textTransform:"uppercase", marginBottom:10 }}>Category</div>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
+              {CATEGORIES.filter(c=>c.id!=="all").map(cat=>(
+                <div key={cat.id} className="cat-chip" onClick={()=>setNewCategory(cat.id)}
+                  style={{ padding:"7px 14px", borderRadius:20, fontSize:12, fontWeight:600,
+                    background: newCategory===cat.id ? cat.color+"33" : "#18181f",
+                    border: newCategory===cat.id ? `2px solid ${cat.color}` : "2px solid #2a2a35",
+                    color: newCategory===cat.id ? cat.color : "#666" }}>
+                  {cat.emoji} {cat.label}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Emoji */}
+          <div style={{ marginBottom:22 }}>
+            <div style={{ fontSize:11, letterSpacing:2, color:"#555", textTransform:"uppercase", marginBottom:10 }}>Icon</div>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
+              {EMOJIS.map(e=>(
+                <div key={e} className="dot" onClick={()=>setNewEmoji(e)}
+                  style={{ width:42, height:42, borderRadius:10, fontSize:22, background:newEmoji===e?newColor+"33":"#18181f",
+                    border:newEmoji===e?`2px solid ${newColor}`:"2px solid #2a2a35",
+                    display:"flex", alignItems:"center", justifyContent:"center" }}>
+                  {e}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Color */}
+          <div style={{ marginBottom:32 }}>
+            <div style={{ fontSize:11, letterSpacing:2, color:"#555", textTransform:"uppercase", marginBottom:10 }}>Color</div>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:10 }}>
+              {COLORS.map(c=>(
+                <div key={c} onClick={()=>setNewColor(c)}
+                  style={{ width:32, height:32, borderRadius:"50%", background:c, cursor:"pointer",
+                    border:newColor===c?"3px solid #fff":"3px solid transparent",
+                    boxShadow:newColor===c?`0 0 0 2px ${c}`:"none", transition:"all 0.15s" }} />
+              ))}
+            </div>
+          </div>
+
+          <button onClick={addHabit} disabled={!newName.trim()}
+            style={{ width:"100%", background:newName.trim()?newColor:"#1e1e26", color:newName.trim()?"#fff":"#444",
+              padding:"14px", borderRadius:14, fontSize:15, fontWeight:800, letterSpacing:1 }}>
+            CREATE HABIT
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── HOME ──────────────────────────────────────────────────────────────
+  const days = getDays(year, month);
+  const filteredHabits = activeCategory === "all" ? habits : habits.filter(h => (h.category || "other") === activeCategory);
+  const totalDone  = habits.reduce((a,h)=>a+doneCount(h.id),0);
+  const bestStreak = habits.length ? Math.max(...habits.map(h=>streak(h.id))) : 0;
+
+  // only show categories that have habits
+  const usedCatIds = ["all", ...new Set(habits.map(h => h.category || "other"))];
+  const visibleCats = CATEGORIES.filter(c => usedCatIds.includes(c.id));
+
+  return (
+    <div style={{ minHeight:"100vh" }}>
+      <div style={{ maxWidth:440, margin:"0 auto", padding:"0 16px 100px" }}>
+
+        {/* Header */}
+        <div style={{ padding:"28px 0 16px", display:"flex", alignItems:"flex-end", justifyContent:"space-between" }}>
+          <div>
+            <div style={{ fontSize:11, letterSpacing:3, color:"#555", textTransform:"uppercase" }}>
+              {now.toLocaleDateString("en-US",{weekday:"long"})}
+            </div>
+            <div style={{ fontSize:28, fontWeight:800, letterSpacing:-0.5, marginTop:4 }}>
+              {MONTHS[now.getMonth()]} {now.getDate()}
+            </div>
+          </div>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <span style={{ fontSize:11, color:statusColor, letterSpacing:1, transition:"color 0.3s", minWidth:60, textAlign:"right" }}>{statusText}</span>
+            <button onClick={()=>setPage("add")}
+              style={{ background:"#f0f0f0", color:"#0f0f14", width:40, height:40, borderRadius:"50%", fontSize:22, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>
+              +
+            </button>
+          </div>
+        </div>
+
+        {/* Category filter tabs */}
+        {habits.length > 0 && (
+          <div style={{ display:"flex", gap:8, overflowX:"auto", paddingBottom:4, marginBottom:16, scrollbarWidth:"none" }}>
+            {visibleCats.map(cat => {
+              const isActive = activeCategory === cat.id;
+              return (
+                <button key={cat.id} className="cat-tab" onClick={()=>setActiveCategory(cat.id)}
+                  style={{ padding:"7px 14px", borderRadius:20, fontSize:12, fontWeight:isActive?700:400,
+                    background: isActive ? cat.color : "#18181f",
+                    border: isActive ? `1px solid ${cat.color}` : "1px solid #2a2a35",
+                    color: isActive ? (cat.id==="all"?"#f0f0f0":"#0f0f14") : "#666",
+                    flexShrink:0 }}>
+                  {cat.emoji} {cat.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Month nav */}
+        <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:18 }}>
+          <button style={navBtn} onClick={prevM}>‹</button>
+          <span style={{ flex:1, textAlign:"center", fontSize:12, color:"#666", letterSpacing:2 }}>{MONTHS[month].toUpperCase()} {year}</span>
+          <button style={navBtn} onClick={nextM}>›</button>
+        </div>
+
+        {loading && (
+          <div style={{ textAlign:"center", padding:"40px 0", color:"#555", fontSize:13, letterSpacing:2 }}>⟳ LOADING FROM SUPABASE...</div>
+        )}
+
+        {!loading && habits.length===0 && (
+          <div style={{ textAlign:"center", padding:"80px 20px", color:"#333" }}>
+            <div style={{ fontSize:56, marginBottom:16 }}>🎯</div>
+            <div style={{ fontSize:18, color:"#555", marginBottom:8 }}>No habits yet</div>
+            <div style={{ fontSize:13, color:"#333", lineHeight:1.6 }}>Tap <strong style={{color:"#f0f0f0"}}>+</strong> to create your first habit</div>
+          </div>
+        )}
+
+        {!loading && habits.length>0 && filteredHabits.length===0 && (
+          <div style={{ textAlign:"center", padding:"50px 20px", color:"#333" }}>
+            <div style={{ fontSize:40, marginBottom:12 }}>{getCatMeta(activeCategory).emoji}</div>
+            <div style={{ fontSize:14, color:"#555" }}>No habits in this category yet</div>
+          </div>
+        )}
+
+        {/* Habit cards */}
+        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+          {filteredHabits.map((habit,idx)=>{
+            const done=doneCount(habit.id), pct=Math.round((done/days)*100), str=streak(habit.id);
+            const cat = getCatMeta(habit.category);
+            return (
+              <div key={habit.id} className="card fu" onClick={()=>{setSelId(habit.id);setPage("detail");}}
+                style={{ background:"#18181f", borderRadius:18, padding:"18px 20px", border:"1px solid #2a2a35", animationDelay:`${idx*0.06}s`, opacity:0 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:14 }}>
+                  <div style={{ width:44, height:44, borderRadius:12, background:habit.color+"22",
+                    display:"flex", alignItems:"center", justifyContent:"center", fontSize:22, flexShrink:0 }}>
+                    {habit.emoji}
+                  </div>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:3 }}>
+                      <span style={{ background:cat.color+"22", border:`1px solid ${cat.color}44`, color:cat.color, borderRadius:20, padding:"1px 8px", fontSize:9, letterSpacing:1, flexShrink:0 }}>
+                        {cat.label.toUpperCase()}
+                      </span>
+                    </div>
+                    <div style={{ fontSize:15, fontWeight:700, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{habit.name}</div>
+                    <div style={{ fontSize:11, color:"#555", marginTop:1 }}>{str>0?`🔥 ${str} day streak`:"Start your streak today"}</div>
+                  </div>
+                  <div style={{ textAlign:"right", flexShrink:0 }}>
+                    <div style={{ fontSize:20, fontWeight:800, color:habit.color }}>{pct}%</div>
+                    <div style={{ fontSize:10, color:"#444" }}>{done}/{days} days</div>
+                  </div>
+                </div>
+                <div style={{ height:4, background:"#0f0f14", borderRadius:2, overflow:"hidden", marginBottom:12 }}>
+                  <div style={{ height:"100%", width:pct+"%", background:habit.color, borderRadius:2 }} />
+                </div>
+                <div style={{ display:"flex", gap:4 }} onClick={e=>e.stopPropagation()}>
+                  {Array.from({length:14},(_,i)=>{
+                    const d=days-13+i; if(d<1) return <div key={i} style={{flex:1}}/>;
+                    const checked=logs[lk(habit.id,d)];
+                    const isTd=d===now.getDate()&&month===now.getMonth()&&year===now.getFullYear();
+                    return (
+                      <div key={d} className="dot" onClick={(e)=>toggle(habit.id,d,e)}
+                        style={{ flex:1, height:8, borderRadius:4, background:checked?habit.color:"#0f0f14",
+                          border:isTd?`1.5px solid ${habit.color}`:"1.5px solid #2a2a35" }} />
+                    );
+                  })}
+                </div>
+                <div style={{ display:"flex", justifyContent:"space-between", marginTop:6, fontSize:9, color:"#333" }}>
+                  <span>{Math.max(1,days-13)}</span>
+                  <span style={{ color:"#3a3a45", letterSpacing:1 }}>TAP DOTS · TAP CARD FOR FULL VIEW</span>
+                  <span>{days}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {habits.length>0 && (
+          <>
+            <div style={{ marginTop:28, background:"#18181f", borderRadius:16, padding:"16px 20px", border:"1px solid #2a2a35", display:"flex", justifyContent:"space-around" }}>
+              {[["HABITS",habits.length],["BEST STREAK",bestStreak],["THIS MONTH",totalDone]].map(([l,v])=>(
+                <div key={l} style={{ textAlign:"center" }}>
+                  <div style={{ fontSize:22, fontWeight:800 }}>{v}</div>
+                  <div style={{ fontSize:9, color:"#444", letterSpacing:2, marginTop:3 }}>{l}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop:14, display:"flex", gap:10 }}>
+              <button onClick={exportData}
+                style={{ flex:1, background:"#18181f", border:"1px solid #2a2a35", color:"#888", borderRadius:12, padding:"11px 0", fontSize:12, letterSpacing:1 }}>
+                ⬇ Export Backup
+              </button>
+              <label style={{ flex:1, background:"#18181f", border:"1px solid #2a2a35", color:"#888", borderRadius:12, padding:"11px 0", fontSize:12, letterSpacing:1, textAlign:"center", cursor:"pointer" }}>
+                ⬆ Import Backup
+                <input type="file" accept=".json" style={{ display:"none" }} onChange={e=>{ importData(e.target.files[0]); e.target.value=""; }} />
+              </label>
+            </div>
+            <div style={{ marginTop:10, textAlign:"center", fontSize:10, color:"#2a2a35", letterSpacing:2 }}>
+              ☁ SYNCED WITH SUPABASE · <span style={{ cursor:"pointer", textDecoration:"underline" }} onClick={()=>{localStorage.removeItem("sb_url");localStorage.removeItem("sb_key");window.location.reload();}}>DISCONNECT</span>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
